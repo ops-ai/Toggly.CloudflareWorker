@@ -8,10 +8,3 @@ TOGGLY_API_BASE_URL = "https://client.toggly.io"
 TOGGLY_ENVIRONMENT = "Production"
 ORIGIN_BASE_URL = "https://your-docs-origin.example.com"
 TOGGLY_APP_KEY = "your-app-key"
-
-[env.production]
-# Configure production overrides or routes in the dashboard or by adding:
-# routes = ["docs.example.com/*"]
-
-[env.staging]
-# Same as production, but for staging envs if you use them.
