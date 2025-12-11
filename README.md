@@ -44,6 +44,8 @@ npm run deploy
 ```
 Then attach a route or custom domain in the Cloudflare dashboard (e.g., `docs.example.com/*`).
 
+> If the deploy wizard shows both “Secrets” and “Text” sections for the same names, fill only the **Text** fields and leave the “Secrets” fields empty. All four vars are plain text.
+
 ## How it works
 - Looks up page → feature mappings from `toggly-page-features.json` served by your origin.
 - Fetches flags from Toggly using `@ops-ai/toggly-client-core`.
