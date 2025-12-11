@@ -2,7 +2,7 @@
 
 One-click deployable Cloudflare Worker that applies Toggly feature-flag gating at the edge. It proxies your docs site and removes or blocks pages for disabled features.
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TogglyHQ/Toggly.CloudflareWorker)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ops-ai/Toggly.CloudflareWorker)
 
 ## What it does
 
