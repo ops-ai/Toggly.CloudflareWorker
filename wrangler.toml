@@ -1,0 +1,19 @@
+name = "toggly-cloudflare-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Non-sensitive defaults. Override per-env in dashboard or .dev.vars
+[vars]
+TOGGLY_API_BASE_URL = "https://client.toggly.io"
+TOGGLY_ENVIRONMENT = "Production"
+ORIGIN_BASE_URL = "https://your-docs-origin.example.com"
+
+# Required secret (set with `wrangler secret put TOGGLY_APP_KEY`)
+# TOGGLY_APP_KEY
+
+[env.production]
+# Configure production overrides or routes in the dashboard or by adding:
+# routes = ["docs.example.com/*"]
+
+[env.staging]
+# Same as production, but for staging envs if you use them.
