@@ -17,11 +17,11 @@ One-click deployable Cloudflare Worker that applies Toggly feature-flag gating a
 npm install
 ```
 
-2) **Set environment variables**
-- Required secret: `TOGGLY_APP_KEY` (set with `wrangler secret put TOGGLY_APP_KEY`)
-- Non-sensitive vars can live in `wrangler.toml` or `.dev.vars`:
+2) **Set environment variables** (all regular vars; none are secrets)
+- You can set them in `wrangler.toml`, via the Cloudflare dashboard, or in `.dev.vars` for local dev:
   - `TOGGLY_API_BASE_URL` (defaults to `https://client.toggly.io`)
   - `TOGGLY_ENVIRONMENT` (e.g., `Production`)
+  - `TOGGLY_APP_KEY` (your app key)
   - `ORIGIN_BASE_URL` (your docs origin, e.g., `https://my-docs.pages.dev`)
 
 Example `.dev.vars`:

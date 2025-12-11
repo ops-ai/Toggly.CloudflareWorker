@@ -7,9 +7,7 @@ compatibility_date = "2024-01-01"
 TOGGLY_API_BASE_URL = "https://client.toggly.io"
 TOGGLY_ENVIRONMENT = "Production"
 ORIGIN_BASE_URL = "https://your-docs-origin.example.com"
-
-# Required secret (set with `wrangler secret put TOGGLY_APP_KEY`)
-# TOGGLY_APP_KEY
+TOGGLY_APP_KEY = "your-app-key"
 
 [env.production]
 # Configure production overrides or routes in the dashboard or by adding:
