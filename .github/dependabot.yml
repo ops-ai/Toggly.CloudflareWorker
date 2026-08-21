@@ -1,0 +1,44 @@
+# Dependabot policy for Toggly.CloudflareWorker (OPS-705)
+#
+# Edge worker deployed with wrangler. Patch and minor updates are grouped into
+# one weekly PR. Toolchain majors need a config migration, so they stay product
+# decisions rather than bot merges.
+#
+# No github-actions ecosystem: this repo has no workflows. Add that block if
+# CI is introduced.
+#
+# Do not set target-branch here: develop is the default branch. Setting
+# target-branch would disable Dependabot security updates for that ecosystem.
+# See https://docs.github.com/code-security/reference/supply-chain-security/dependabot-options-reference
+
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      npm-patch-and-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # A wrangler major changes wrangler.toml handling and the compatibility
+      # date contract, so it has to be verified against a real deploy.
+      - dependency-name: wrangler
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 is the native port; adopt it deliberately.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      # ESLint 9 requires migrating to flat config, and the typescript-eslint
+      # majors are pinned to the ESLint major.
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@typescript-eslint/*"
+        update-types: ["version-update:semver-major"]
