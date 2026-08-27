@@ -37,7 +37,7 @@ export function transformHtmlResponse(
 
   // Create transformer and transform the stream
   const transformer = createFeatureGateTransformer(flags);
-  // @ts-ignore - HTMLRewriter types may be incorrect in @cloudflare/workers-types
+  // @ts-expect-error - HTMLRewriter types may be incorrect in @cloudflare/workers-types
   const transformedStream = transformer.transform(body);
 
   // Copy headers but remove Content-Length as it may change
