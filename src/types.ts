@@ -3,7 +3,7 @@
  */
 
 export interface Env {
-  /** Toggly API base URL */
+  /** Toggly API base URL (flag definitions / client endpoint) */
   TOGGLY_API_BASE_URL: string;
   /** Toggly environment name (e.g., 'Production', 'Staging') */
   TOGGLY_ENVIRONMENT: string;
@@ -11,6 +11,21 @@ export interface Env {
   TOGGLY_APP_KEY: string;
   /** Origin base URL (e.g., Cloudflare Pages URL or GitHub Pages URL) */
   ORIGIN_BASE_URL: string;
+  /**
+   * Metrics/usage gateway base URL (HTTPS JSON).
+   * Defaults to https://app.toggly.io/ when unset.
+   */
+  TOGGLY_METRICS_BASE_URL?: string;
+  /**
+   * Enable feature usage telemetry (`api/usage/stats`).
+   * Defaults to true when TOGGLY_APP_KEY is set.
+   */
+  TOGGLY_USAGE_ENABLED?: string;
+  /**
+   * Enable business metrics telemetry (`api/metrics`).
+   * Defaults to true when TOGGLY_APP_KEY is set.
+   */
+  TOGGLY_METRICS_ENABLED?: string;
 }
 
 /**
@@ -25,6 +40,8 @@ export interface PageFeatureMapping {
  * Can be extended with user/tenant information from cookies or headers
  */
 export interface RequestContext {
+  /** Optional identity for unique usage hashing (FNV-1a signed int32). */
+  userId?: string;
   [key: string]: unknown;
 }
 

@@ -2,3 +2,6 @@ TOGGLY_API_BASE_URL=https://client.toggly.io
 TOGGLY_ENVIRONMENT=Production
 TOGGLY_APP_KEY=your_app_key_here
 ORIGIN_BASE_URL=https://your-docs-origin.example.com
+TOGGLY_METRICS_BASE_URL=https://app.toggly.io/
+# TOGGLY_USAGE_ENABLED=true
+# TOGGLY_METRICS_ENABLED=true
