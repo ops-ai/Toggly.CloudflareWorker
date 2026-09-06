@@ -5,17 +5,32 @@
  * feature flag is disabled.
  */
 
+export type FeatureGateObserver = (featureKey: string, enabled: boolean) => void;
+
 /**
  * Create an HTMLRewriter transformer that removes elements
  * based on feature flags
  */
-export function createFeatureGateTransformer(flags: Record<string, boolean>) {
+export function createFeatureGateTransformer(
+  flags: Record<string, boolean>,
+  onFeatureGate?: FeatureGateObserver
+) {
   const rewriter = new HTMLRewriter();
   return rewriter.on('[data-feature]', {
     element(element: Element) {
       const featureKey = element.getAttribute('data-feature');
-      if (featureKey && !flags[featureKey]) {
-        // Remove the element if the feature is disabled
+      if (!featureKey) {
+        return;
+      }
+      const enabled = !!flags[featureKey];
+      if (onFeatureGate) {
+        try {
+          onFeatureGate(featureKey, enabled);
+        } catch {
+          // Telemetry must never break HTML rewriting
+        }
+      }
+      if (!enabled) {
         element.remove();
       }
     },
@@ -28,7 +43,8 @@ export function createFeatureGateTransformer(flags: Record<string, boolean>) {
  */
 export function transformHtmlResponse(
   response: Response,
-  flags: Record<string, boolean>
+  flags: Record<string, boolean>,
+  onFeatureGate?: FeatureGateObserver
 ): Response {
   const body = response.body;
   if (!body) {
@@ -36,7 +52,7 @@ export function transformHtmlResponse(
   }
 
   // Create transformer and transform the stream
-  const transformer = createFeatureGateTransformer(flags);
+  const transformer = createFeatureGateTransformer(flags, onFeatureGate);
   // @ts-expect-error - HTMLRewriter types may be incorrect in @cloudflare/workers-types
   const transformedStream = transformer.transform(body);
 
