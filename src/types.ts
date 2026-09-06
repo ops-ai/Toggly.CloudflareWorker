@@ -3,7 +3,7 @@
  */
 
 export interface Env {
-  /** Toggly API base URL (flag definitions / client endpoint) */
+  /** Definitions API base URL (default https://definitions.toggly.io). Worker GETs `{base}/evaluated-signed/{appKey}/{environment}`. */
   TOGGLY_API_BASE_URL: string;
   /** Toggly environment name (e.g., 'Production', 'Staging') */
   TOGGLY_ENVIRONMENT: string;

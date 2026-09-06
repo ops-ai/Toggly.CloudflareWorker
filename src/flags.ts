@@ -1,59 +1,108 @@
 /**
- * Feature flag fetching and caching utilities
+ * Feature flag fetching and caching utilities.
  *
- * Uses @ops-ai/toggly-client-core to fetch flags and implements edge-side caching
- * using Cloudflare's cache API.
+ * Fetches evaluated flags from definitions.toggly.io
+ * (`/evaluated-signed/{appKey}/{environment}`) and caches them with the
+ * Cloudflare Cache API. Kept as a direct fetch (no `@ops-ai/toggly-client-core`)
+ * so the Worker hits the definitions path, not the legacy client.toggly.io
+ * `{appKey}-{environment}/defs` URL.
  */
 
-import { createTogglyClient, type TogglyConfig } from '@ops-ai/toggly-client-core';
 import type { RequestContext, Env } from './types';
 
-const DEFAULT_FLAGS_CACHE_TTL_SECONDS = 30; // 30 seconds
+const DEFAULT_FLAGS_CACHE_TTL_SECONDS = 30;
+const FLAGS_FETCH_TIMEOUT_MS = 5_000;
 
-/**
- * Generate a cache key for flags based on context
- */
-function getFlagsCacheKey(context: RequestContext): string {
-  // For now, we use a simple key since context is empty
-  // In the future, this can include user/tenant IDs
-  const contextKey = JSON.stringify(context);
-  return `flags:${contextKey}`;
+/** Default host for flag definitions (not the usage/metrics gateway). */
+export const DEFAULT_DEFINITIONS_BASE_URL = 'https://definitions.toggly.io';
+
+type Flags = Record<string, boolean>;
+
+interface TogglyApiPayload {
+  defs?: Flags;
+  [key: string]: unknown;
 }
 
 /**
- * Get feature flags for the given context
- * Uses both @ops-ai/toggly-client-core's in-memory cache and Cloudflare's cache API
+ * Build the definitions.toggly.io evaluated-signed URL.
+ * Returns null when app key or environment is missing.
+ */
+export function buildEvaluatedSignedUrl(env: Env): string | null {
+  const appKey = env.TOGGLY_APP_KEY?.trim();
+  const environment = env.TOGGLY_ENVIRONMENT?.trim();
+  if (!appKey || !environment) {
+    return null;
+  }
+
+  const baseUrl = (env.TOGGLY_API_BASE_URL?.trim() || DEFAULT_DEFINITIONS_BASE_URL).replace(
+    /\/$/,
+    '',
+  );
+  return `${baseUrl}/evaluated-signed/${encodeURIComponent(appKey)}/${encodeURIComponent(environment)}`;
+}
+
+function unwrapDefsPayload(payload: TogglyApiPayload | Flags): Flags {
+  const defs = (payload as TogglyApiPayload).defs;
+  if (defs && typeof defs === 'object') {
+    return defs;
+  }
+  return payload as Flags;
+}
+
+function getFlagsCacheKey(env: Env, context: RequestContext): string {
+  const contextKey = JSON.stringify(context);
+  return `flags:${encodeURIComponent(env.TOGGLY_APP_KEY)}:${encodeURIComponent(env.TOGGLY_ENVIRONMENT)}:${contextKey}`;
+}
+
+async function fetchFlagsFromDefinitions(env: Env): Promise<Flags> {
+  const url = buildEvaluatedSignedUrl(env);
+  if (!url) {
+    return {};
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FLAGS_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch flags: ${response.status} ${response.statusText}`);
+    }
+    const payload = (await response.json()) as TogglyApiPayload | Flags;
+    return unwrapDefsPayload(payload);
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Get feature flags for the given context.
+ * Uses Cloudflare's cache API when available.
  */
 export async function getFlags(
   env: Env,
   context: RequestContext,
   cache: Cache | null,
-  cacheTTLSeconds: number = DEFAULT_FLAGS_CACHE_TTL_SECONDS
-): Promise<Record<string, boolean>> {
-  const config: TogglyConfig = {
-    baseURI: env.TOGGLY_API_BASE_URL,
-    appKey: env.TOGGLY_APP_KEY,
-    environment: env.TOGGLY_ENVIRONMENT,
-    fetch: globalThis.fetch, // Use Cloudflare's fetch
-  };
-
-  // Check Cloudflare cache first
-  const cacheKey = getFlagsCacheKey(context);
+  cacheTTLSeconds: number = DEFAULT_FLAGS_CACHE_TTL_SECONDS,
+): Promise<Flags> {
+  const cacheKey = getFlagsCacheKey(env, context);
   const cacheRequest = new Request(`https://toggly-cache/${cacheKey}`);
 
   if (cache) {
     const cachedResponse = await cache.match(cacheRequest);
     if (cachedResponse) {
-      const flags = (await cachedResponse.json()) as Record<string, boolean>;
-      return flags;
+      return (await cachedResponse.json()) as Flags;
     }
   }
 
-  // Fetch flags using @ops-ai/toggly-client-core
-  const client = createTogglyClient(config);
-  const flags = await client.getFlags();
+  const flags = await fetchFlagsFromDefinitions(env);
 
-  // Store in Cloudflare cache
   if (cache) {
     const response = new Response(JSON.stringify(flags), {
       headers: {
@@ -61,7 +110,6 @@ export async function getFlags(
         'Cache-Control': `public, max-age=${cacheTTLSeconds}`,
       },
     });
-    // Note: In Cloudflare Workers, cache.put is fire-and-forget
     cache.put(cacheRequest, response);
   }
 
@@ -76,7 +124,7 @@ export async function isFeatureEnabled(
   env: Env,
   context: RequestContext,
   cache: Cache | null,
-  cacheTTLSeconds?: number
+  cacheTTLSeconds?: number,
 ): Promise<boolean> {
   const flags = await getFlags(env, context, cache, cacheTTLSeconds);
   return flags[flagKey] ?? false;

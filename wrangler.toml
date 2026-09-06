@@ -4,7 +4,7 @@ compatibility_date = "2024-01-01"
 
 # Non-sensitive defaults. Override per-env in dashboard or .dev.vars
 [vars]
-TOGGLY_API_BASE_URL = "https://client.toggly.io"
+TOGGLY_API_BASE_URL = "https://definitions.toggly.io"
 TOGGLY_ENVIRONMENT = "Production"
 ORIGIN_BASE_URL = "https://your-docs-origin.example.com"
 TOGGLY_APP_KEY = "your-app-key"

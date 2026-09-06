@@ -1,6 +1,6 @@
 {
   "name": "toggly-cloudflare-worker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Cloudflare Worker that applies Toggly feature flag gating at the edge.",
   "license": "MIT",
   "private": true,
@@ -13,9 +13,6 @@
     "lint": "eslint src",
     "test": "vitest run",
     "clean": "rm -rf .wrangler dist"
-  },
-  "dependencies": {
-    "@ops-ai/toggly-client-core": "^0.1.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260827.1",

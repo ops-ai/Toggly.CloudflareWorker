@@ -1,4 +1,4 @@
-TOGGLY_API_BASE_URL=https://client.toggly.io
+TOGGLY_API_BASE_URL=https://definitions.toggly.io
 TOGGLY_ENVIRONMENT=Production
 TOGGLY_APP_KEY=your_app_key_here
 ORIGIN_BASE_URL=https://your-docs-origin.example.com
