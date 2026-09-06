@@ -1,3 +1,14 @@
+## 0.2.1
+
+2026-09-06
+
+### Fixed
+- Fetch flag definitions from `https://definitions.toggly.io/evaluated-signed/{appKey}/{environment}` instead of the legacy `client.toggly.io` `{appKey}-{environment}/defs` path used by `@ops-ai/toggly-client-core@0.1.5`.
+- Document definitions vs metrics hosts so README, Wrangler, and `.dev.vars` match the worker.
+
+### Changed
+- Drop the `@ops-ai/toggly-client-core` runtime dependency; the Worker fetches the definitions endpoint directly.
+
 ## 0.2.0
 
 2026-09-06
