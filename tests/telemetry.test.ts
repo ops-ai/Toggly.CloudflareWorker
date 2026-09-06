@@ -50,12 +50,12 @@ describe('UsageBatcher', () => {
 
     const payload = batcher.buildAndReset();
     expect(payload).not.toBeNull();
-    expect(payload!.appKey).toBe('app');
-    expect(typeof payload!.time).toBe('string');
-    expect(payload!.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(payload!.processStartTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(payload!.payload.appKey).toBe('app');
+    expect(typeof payload!.payload.time).toBe('string');
+    expect(payload!.payload.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(payload!.payload.processStartTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
-    const stat = payload!.stats[0]!;
+    const stat = payload!.payload.stats[0]!;
     expect(stat.variantStats.enabled!.checkCount).toBe(2);
     expect(stat.variantStats.enabled!.requestCount).toBe(0);
     expect(stat.variantStats.enabled!.usedCount).toBe(1);
@@ -73,9 +73,9 @@ describe('UsageBatcher', () => {
     batcher.recordCheck('FeatureA', false, 'user-2', undefined, true);
 
     const payload = batcher.buildAndReset();
-    expect(payload!.stats[0]!.variantStats.enabled!.checkCount).toBe(2);
-    expect(payload!.stats[0]!.variantStats.enabled!.requestCount).toBe(1);
-    expect(payload!.stats[0]!.variantStats.disabled!.requestCount).toBe(1);
+    expect(payload!.payload.stats[0]!.variantStats.enabled!.checkCount).toBe(2);
+    expect(payload!.payload.stats[0]!.variantStats.enabled!.requestCount).toBe(1);
+    expect(payload!.payload.stats[0]!.variantStats.disabled!.requestCount).toBe(1);
   });
 
   it('enforces unique hash and feature caps', () => {
@@ -94,21 +94,54 @@ describe('UsageBatcher', () => {
 
     expect(batcher.hitFeatureCap()).toBe(true);
     const payload = batcher.buildAndReset();
-    expect(payload!.stats).toHaveLength(1);
-    expect(payload!.stats[0]!.feature).toBe('OnlyFeature');
-    expect(payload!.stats[0]!.uniqueUserHashes).toHaveLength(2);
-    expect(payload!.uniqueUserHashes).toHaveLength(2);
+    expect(payload!.payload.stats).toHaveLength(1);
+    expect(payload!.payload.stats[0]!.feature).toBe('OnlyFeature');
+    expect(payload!.payload.stats[0]!.uniqueUserHashes).toHaveLength(2);
+    expect(payload!.payload.uniqueUserHashes).toHaveLength(2);
   });
 
   it('restores payload after failed send', () => {
     const batcher = new UsageBatcher({ appKey: 'app', environment: 'Production' });
     batcher.recordCheck('F', true);
-    const payload = batcher.buildAndReset()!;
+    const bundle = batcher.buildAndReset()!;
     expect(batcher.isEmpty()).toBe(true);
-    batcher.restoreFromPayload(payload);
+    batcher.restoreFromPayload(bundle);
     expect(batcher.isEmpty()).toBe(false);
     const again = batcher.buildAndReset()!;
-    expect(again.stats[0]!.variantStats.enabled!.checkCount).toBe(1);
+    expect(again.payload.stats[0]!.variantStats.enabled!.checkCount).toBe(1);
+  });
+
+  it('restores enabled/disabled/used uniqueness sets (not only wire counts)', () => {
+    const batcher = new UsageBatcher({ appKey: 'app', environment: 'Production' });
+    batcher.recordCheck('Feat', true, 'alice');
+    batcher.recordCheck('Feat', false, 'bob');
+    batcher.recordUsage('Feat', 'carol');
+
+    const bundle = batcher.buildAndReset()!;
+    expect(bundle.payload.stats[0]!.uniqueContextIdentifierEnabledCount).toBe(1);
+    expect(bundle.payload.stats[0]!.uniqueContextIdentifierDisabledCount).toBe(1);
+    expect(bundle.payload.stats[0]!.uniqueUsersUsedCount).toBe(1);
+    expect(bundle.uniqueUsersEnabled.Feat).toEqual([hashIdentity('alice')]);
+    expect(bundle.uniqueUsersDisabled.Feat).toEqual([hashIdentity('bob')]);
+    expect(bundle.uniqueUsersUsed.Feat).toEqual([hashIdentity('carol')]);
+
+    // Simulate a concurrent record after drain, then soft-fail restore (union-merge).
+    batcher.recordCheck('Feat', true, 'dave');
+    batcher.restoreFromPayload(bundle);
+
+    const restored = batcher.buildAndReset()!;
+    expect(restored.payload.stats[0]!.uniqueContextIdentifierEnabledCount).toBe(2); // alice+dave
+    expect(restored.payload.stats[0]!.uniqueContextIdentifierDisabledCount).toBe(1); // bob
+    expect(restored.payload.stats[0]!.uniqueUsersUsedCount).toBe(1); // carol
+    expect(restored.uniqueUsersEnabled.Feat).toEqual(
+      expect.arrayContaining([hashIdentity('alice'), hashIdentity('dave')])
+    );
+    expect(restored.uniqueUsersDisabled.Feat).toEqual([hashIdentity('bob')]);
+    expect(restored.uniqueUsersUsed.Feat).toEqual([hashIdentity('carol')]);
+    // Variant counts: restored check (alice enabled + bob disabled) + dave enabled
+    expect(restored.payload.stats[0]!.variantStats.enabled!.checkCount).toBe(2);
+    expect(restored.payload.stats[0]!.variantStats.disabled!.checkCount).toBe(1);
+    expect(restored.payload.stats[0]!.variantStats.enabled!.usedCount).toBe(1);
   });
 });
 
@@ -207,6 +240,53 @@ describe('TelemetryRuntime', () => {
       'https://app.toggly.io/api/usage/stats',
       expect.objectContaining({ method: 'POST' })
     );
+  });
+
+  it('drains again when records arrive during an in-flight flush', async () => {
+    let resolveFirstSend!: (value: { ok: boolean }) => void;
+    const firstSend = new Promise<{ ok: boolean }>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+    let sendCount = 0;
+    const fetchImpl = vi.fn().mockImplementation(() => {
+      sendCount += 1;
+      if (sendCount === 1) {
+        return firstSend;
+      }
+      return Promise.resolve({ ok: true });
+    });
+
+    const runtime = new TelemetryRuntime({
+      appKey: 'app',
+      environment: 'Production',
+      metricsBaseUrl: 'https://app.toggly.io/',
+      enableUsageTracking: true,
+      enableMetrics: false,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    runtime.recordCheck('First', true, 'u1');
+    const flush1 = runtime.flush();
+
+    // Wait until first POST is in flight (batch already drained into payload).
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+    // Concurrent records + flush while first send is pending.
+    runtime.recordCheck('Second', true, 'u2');
+    const flush2 = runtime.flush();
+
+    resolveFirstSend({ ok: true });
+    await Promise.all([flush1, flush2]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const bodies = fetchImpl.mock.calls.map(
+      (call) => JSON.parse((call[1] as RequestInit).body as string) as {
+        stats: Array<{ feature: string }>;
+      }
+    );
+    const features = bodies.flatMap((b) => b.stats.map((s) => s.feature));
+    expect(features).toEqual(expect.arrayContaining(['First', 'Second']));
+    expect(runtime.usagePending()).toBe(false);
   });
 });
 

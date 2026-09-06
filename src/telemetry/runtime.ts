@@ -28,6 +28,8 @@ export class TelemetryRuntime {
   private readonly usage: UsageBatcher;
   private readonly metrics: MetricsBatcher;
   private flushInFlight: Promise<void> | null = null;
+  /** Set when flush() is requested during an in-flight drain; triggers another pass. */
+  private pendingDrain = false;
 
   constructor(options: TelemetryRuntimeOptions) {
     this.config = options;
@@ -139,21 +141,40 @@ export class TelemetryRuntime {
   }
 
   /**
-   * Single-flight flush. Soft-fails network errors and restores batches on failure.
+   * Single-flight flush with pending-drain follow-up.
+   * Soft-fails network errors and restores batches on failure.
+   * If flush() is called again while a drain is in flight, another drain runs
+   * after the active one completes (records are not stranded on the first promise).
    */
   async flush(): Promise<void> {
+    this.pendingDrain = true;
     if (this.flushInFlight) {
       return this.flushInFlight;
     }
 
-    this.flushInFlight = this.flushInternal().finally(() => {
-      this.flushInFlight = null;
-    });
+    this.flushInFlight = this.drainUntilIdle();
     return this.flushInFlight;
   }
 
+  private async drainUntilIdle(): Promise<void> {
+    try {
+      while (this.pendingDrain) {
+        this.pendingDrain = false;
+        await this.flushInternal();
+      }
+    } finally {
+      this.flushInFlight = null;
+      // Race: another flush() set pendingDrain after the while check but while
+      // we still owned inFlight — start a follow-up drain and await it so every
+      // waiter on this promise observes the extra pass.
+      if (this.pendingDrain) {
+        await this.flush();
+      }
+    }
+  }
+
   private async flushInternal(): Promise<void> {
-    const usagePayload =
+    const usageBundle =
       this.config.enableUsageTracking && !this.usage.isEmpty()
         ? this.usage.buildAndReset()
         : null;
@@ -162,10 +183,10 @@ export class TelemetryRuntime {
         ? this.metrics.buildAndReset()
         : null;
 
-    if (usagePayload) {
-      const ok = await this.client.sendUsageStats(usagePayload);
+    if (usageBundle) {
+      const ok = await this.client.sendUsageStats(usageBundle.payload);
       if (!ok) {
-        this.usage.restoreFromPayload(usagePayload);
+        this.usage.restoreFromPayload(usageBundle);
       }
     }
 

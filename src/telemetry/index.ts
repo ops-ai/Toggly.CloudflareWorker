@@ -5,6 +5,7 @@ export {
   MAX_APPLICATION_UNIQUE_USER_HASHES,
   MAX_FEATURES_PER_BATCH,
   type FeatureStatHttpPayload,
+  type UsageFlushBundle,
   type VariantStatsAgg,
 } from './usage-batcher';
 export {

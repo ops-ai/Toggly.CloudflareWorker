@@ -55,6 +55,18 @@ export interface FeatureStatHttpPayload {
   processStartTime?: string;
 }
 
+/**
+ * Wire payload plus uniqueness hash-set snapshots.
+ * HTTPS wire only carries counts for enabled/disabled/used uniques; the hash
+ * sets must be snapshotted (PHP/Ruby/.NET) so soft-fail restore can union-merge.
+ */
+export interface UsageFlushBundle {
+  payload: FeatureStatHttpPayload;
+  uniqueUsersEnabled: Record<string, number[]>;
+  uniqueUsersDisabled: Record<string, number[]>;
+  uniqueUsersUsed: Record<string, number[]>;
+}
+
 function emptyVariant(): VariantStatsAgg {
   return { checkCount: 0, requestCount: 0, usedCount: 0, viewedCount: 0 };
 }
@@ -205,7 +217,7 @@ export class UsageBatcher {
     return this.perFeature.size;
   }
 
-  buildAndReset(): FeatureStatHttpPayload | null {
+  buildAndReset(): UsageFlushBundle | null {
     if (this.isEmpty()) {
       return null;
     }
@@ -227,6 +239,10 @@ export class UsageBatcher {
       payload.appVersion = this.appVersion;
     }
 
+    const uniqueUsersEnabled: Record<string, number[]> = {};
+    const uniqueUsersDisabled: Record<string, number[]> = {};
+    const uniqueUsersUsed: Record<string, number[]> = {};
+
     for (const [feature, agg] of this.perFeature) {
       const variantStats: Record<string, VariantStatsAgg> = {};
       for (const [name, stats] of agg.variantStats) {
@@ -238,6 +254,17 @@ export class UsageBatcher {
         ) {
           variantStats[name] = { ...stats };
         }
+      }
+
+      // Snapshot uniqueness sets before clear (wire only exposes counts).
+      if (agg.uniqueUsersEnabled.size > 0) {
+        uniqueUsersEnabled[feature] = [...agg.uniqueUsersEnabled];
+      }
+      if (agg.uniqueUsersDisabled.size > 0) {
+        uniqueUsersDisabled[feature] = [...agg.uniqueUsersDisabled];
+      }
+      if (agg.uniqueUsersUsed.size > 0) {
+        uniqueUsersUsed[feature] = [...agg.uniqueUsersUsed];
       }
 
       payload.stats.push({
@@ -254,11 +281,22 @@ export class UsageBatcher {
     this.perFeature = new Map();
     this.appUnique = new Set();
     this.droppedFeatures = false;
-    return payload;
+    return {
+      payload,
+      uniqueUsersEnabled,
+      uniqueUsersDisabled,
+      uniqueUsersUsed,
+    };
   }
 
-  /** Re-merge a failed send payload back into the batcher (soft-fail restore). */
-  restoreFromPayload(payload: FeatureStatHttpPayload): void {
+  /**
+   * Re-merge a failed send bundle (soft-fail restore).
+   * Union-merges variant counts, wire hash lists, and snapshotted
+   * enabled/disabled/used uniqueness sets (PHP/.NET parity).
+   */
+  restoreFromPayload(bundle: UsageFlushBundle): void {
+    const { payload } = bundle;
+
     for (const hash of payload.uniqueUserHashes ?? []) {
       this.trackAppUnique(hash);
     }
@@ -281,6 +319,25 @@ export class UsageBatcher {
       }
       for (const hash of stat.uniqueViewedUserHashes ?? []) {
         this.addHashCapped(agg.uniqueViewedUserHashes, hash, this.maxUniqueHashesPerFeature);
+        this.addHashCapped(agg.uniqueUsersViewed, hash, this.maxUniqueHashesPerFeature);
+      }
+    }
+
+    this.mergeUniqueHashMap(bundle.uniqueUsersEnabled, 'uniqueUsersEnabled');
+    this.mergeUniqueHashMap(bundle.uniqueUsersDisabled, 'uniqueUsersDisabled');
+    this.mergeUniqueHashMap(bundle.uniqueUsersUsed, 'uniqueUsersUsed');
+  }
+
+  private mergeUniqueHashMap(
+    snapshot: Record<string, number[]>,
+    field: 'uniqueUsersEnabled' | 'uniqueUsersDisabled' | 'uniqueUsersUsed'
+  ): void {
+    for (const [feature, hashes] of Object.entries(snapshot ?? {})) {
+      const agg = this.get(feature);
+      if (!agg) continue;
+      for (const hash of hashes) {
+        this.addHashCapped(agg[field], hash, this.maxUniqueHashesPerFeature);
+        this.trackAppUnique(hash);
       }
     }
   }

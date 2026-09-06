@@ -14,3 +14,9 @@
   `TOGGLY_USAGE_ENABLED`, `TOGGLY_METRICS_ENABLED`.
 - User-Agent `toggly-cloudflare-worker/{VERSION}` on telemetry POSTs.
 - Records check/view when page and section gating evaluates.
+
+### Fixed
+- Soft-fail restore union-merges enabled/disabled/used uniqueness hash sets
+  (snapshot alongside wire counts), matching PHP/.NET behavior.
+- Concurrent `flush()` during an in-flight drain schedules a follow-up pass so
+  batches recorded mid-send are not stranded.
