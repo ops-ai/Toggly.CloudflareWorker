@@ -1,3 +1,18 @@
+## 0.3.0
+
+2026-09-09
+
+### Added
+- Report definition-refresh cache hits/misses on usage telemetry
+  (`definitionCacheHits` / `definitionCacheMisses` on `POST api/usage/stats`).
+- Cache API match without a network round-trip counts as a hit; successful
+  network apply that fills the Cache API counts as a miss (one outcome per
+  `getFlags` refresh attempt).
+
+### Changed
+- Package / Worker version `0.2.1` → `0.3.0` (User-Agent
+  `toggly-cloudflare-worker/0.3.0`).
+
 ## 0.2.1
 
 2026-09-06

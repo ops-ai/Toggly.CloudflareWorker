@@ -1,6 +1,6 @@
 {
   "name": "toggly-cloudflare-worker",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Cloudflare Worker that applies Toggly feature flag gating at the edge.",
   "license": "MIT",
   "private": true,
