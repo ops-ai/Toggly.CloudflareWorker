@@ -24,6 +24,15 @@ interface TogglyApiPayload {
 }
 
 /**
+ * Optional recorder for definition-refresh cache hit/miss outcomes.
+ * Injected from telemetry so this module stays free of hard telemetry cycles.
+ */
+export interface DefinitionCacheRecorder {
+  recordDefinitionCacheHit(): void;
+  recordDefinitionCacheMiss(): void;
+}
+
+/**
  * Build the definitions.toggly.io evaluated-signed URL.
  * Returns null when app key or environment is missing.
  */
@@ -54,10 +63,16 @@ function getFlagsCacheKey(env: Env, context: RequestContext): string {
   return `flags:${encodeURIComponent(env.TOGGLY_APP_KEY)}:${encodeURIComponent(env.TOGGLY_ENVIRONMENT)}:${contextKey}`;
 }
 
-async function fetchFlagsFromDefinitions(env: Env): Promise<Flags> {
+interface DefinitionsFetchResult {
+  flags: Flags;
+  /** True when the network returned a successful body to apply. */
+  ok: boolean;
+}
+
+async function fetchFlagsFromDefinitions(env: Env): Promise<DefinitionsFetchResult> {
   const url = buildEvaluatedSignedUrl(env);
   if (!url) {
-    return {};
+    return { flags: {}, ok: false };
   }
 
   const controller = new AbortController();
@@ -70,12 +85,12 @@ async function fetchFlagsFromDefinitions(env: Env): Promise<Flags> {
       signal: controller.signal,
     });
     if (!response.ok) {
-      throw new Error(`Failed to fetch flags: ${response.status} ${response.statusText}`);
+      return { flags: {}, ok: false };
     }
     const payload = (await response.json()) as TogglyApiPayload | Flags;
-    return unwrapDefsPayload(payload);
+    return { flags: unwrapDefsPayload(payload), ok: true };
   } catch {
-    return {};
+    return { flags: {}, ok: false };
   } finally {
     clearTimeout(timer);
   }
@@ -84,12 +99,17 @@ async function fetchFlagsFromDefinitions(env: Env): Promise<Flags> {
 /**
  * Get feature flags for the given context.
  * Uses Cloudflare's cache API when available.
+ *
+ * Counts one definition-refresh outcome per call when a recorder is provided:
+ * Cache API match → hit; successful network apply → miss.
+ * Network errors without last-good retention are not counted (N/A per design).
  */
 export async function getFlags(
   env: Env,
   context: RequestContext,
   cache: Cache | null,
   cacheTTLSeconds: number = DEFAULT_FLAGS_CACHE_TTL_SECONDS,
+  recorder?: DefinitionCacheRecorder | null,
 ): Promise<Flags> {
   const cacheKey = getFlagsCacheKey(env, context);
   const cacheRequest = new Request(`https://toggly-cache/${cacheKey}`);
@@ -97,20 +117,28 @@ export async function getFlags(
   if (cache) {
     const cachedResponse = await cache.match(cacheRequest);
     if (cachedResponse) {
+      recorder?.recordDefinitionCacheHit();
       return (await cachedResponse.json()) as Flags;
     }
   }
 
-  const flags = await fetchFlagsFromDefinitions(env);
+  const { flags, ok } = await fetchFlagsFromDefinitions(env);
+
+  if (ok) {
+    // New revision applied from network (fills Cache API when available).
+    recorder?.recordDefinitionCacheMiss();
+  }
 
   if (cache) {
+    // Put success body or empty failure body so subsequent requests can hit
+    // Cache API (same behavior as before ok/fail classification).
     const response = new Response(JSON.stringify(flags), {
       headers: {
         'Content-Type': 'application/json',
         'Cache-Control': `public, max-age=${cacheTTLSeconds}`,
       },
     });
-    cache.put(cacheRequest, response);
+    await cache.put(cacheRequest, response);
   }
 
   return flags;
@@ -125,7 +153,8 @@ export async function isFeatureEnabled(
   context: RequestContext,
   cache: Cache | null,
   cacheTTLSeconds?: number,
+  recorder?: DefinitionCacheRecorder | null,
 ): Promise<boolean> {
-  const flags = await getFlags(env, context, cache, cacheTTLSeconds);
+  const flags = await getFlags(env, context, cache, cacheTTLSeconds, recorder);
   return flags[flagKey] ?? false;
 }
