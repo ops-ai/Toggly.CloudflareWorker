@@ -132,13 +132,18 @@ export async function getFlags(
   if (cache) {
     // Put success body or empty failure body so subsequent requests can hit
     // Cache API (same behavior as before ok/fail classification).
+    // Soft-fail writes: a rejected put must not fail the request after fetch.
     const response = new Response(JSON.stringify(flags), {
       headers: {
         'Content-Type': 'application/json',
         'Cache-Control': `public, max-age=${cacheTTLSeconds}`,
       },
     });
-    await cache.put(cacheRequest, response);
+    try {
+      await cache.put(cacheRequest, response);
+    } catch {
+      // Cache unavailable / quota / transient write errors — keep fetched flags.
+    }
   }
 
   return flags;

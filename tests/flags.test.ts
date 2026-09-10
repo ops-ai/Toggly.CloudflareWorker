@@ -150,6 +150,30 @@ describe('getFlags', () => {
     expect(recorder.hits).toBe(0);
   });
 
+  it('still returns fetched flags when cache.put rejects', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ defs: { FeatureA: true } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const recorder = makeRecorder();
+    const cache = {
+      async match(): Promise<Response | undefined> {
+        return undefined;
+      },
+      async put(): Promise<void> {
+        throw new Error('cache unavailable');
+      },
+      async delete(): Promise<boolean> {
+        return false;
+      },
+    } as Cache;
+
+    await expect(getFlags(makeEnv(), {}, cache, 30, recorder)).resolves.toEqual({
+      FeatureA: true,
+    });
+    expect(recorder.misses).toBe(1);
+    expect(recorder.hits).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not count network errors (no last-good retention)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
     const recorder = makeRecorder();
