@@ -14,8 +14,8 @@ class TestHtmlRewriter {
     return this;
   }
 
-  transform(body: ReadableStream): ReadableStream {
-    return body;
+  transform(response: Response): Response {
+    return response;
   }
 }
 
@@ -31,7 +31,7 @@ describe('HTML feature gating', () => {
     vi.unstubAllGlobals();
   });
 
-  it('removes disabled feature elements and reports the evaluated gate', () => {
+  it('instructs disabled-feature elements to be removed and reports the evaluated gate', () => {
     vi.stubGlobal('HTMLRewriter', TestHtmlRewriter);
     const seen: Array<[string, boolean]> = [];
     const transformer = createFeatureGateTransformer(
@@ -83,7 +83,7 @@ describe('HTML feature gating', () => {
     expect(transformHtmlResponse(response, {})).toBe(response);
   });
 
-  it('removes stale Content-Length after transforming an HTML stream', async () => {
+  it('removes stale Content-Length when passing a transformed stream through the response', async () => {
     vi.stubGlobal('HTMLRewriter', TestHtmlRewriter);
     const response = new Response('feature content', {
       headers: { 'Content-Length': '15', 'Content-Type': 'text/html' },

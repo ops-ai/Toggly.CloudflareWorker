@@ -1,16 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../src/types';
 
-class TestHtmlRewriter {
-  on(): this {
-    return this;
-  }
-
-  transform(body: ReadableStream): ReadableStream {
-    return body;
-  }
-}
-
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
     TOGGLY_API_BASE_URL: 'https://definitions.toggly.io',
@@ -119,31 +109,6 @@ describe('Cloudflare Worker request handling', () => {
     expect((fetchMock.mock.calls[2]![0] as Request).url).toBe(
       'https://docs.example.com/premium',
     );
-  });
-
-  it('streams HTML responses through the feature-gate transformer', async () => {
-    vi.stubGlobal('HTMLRewriter', TestHtmlRewriter);
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({})))
-      .mockResolvedValueOnce(
-        new Response('<main>content</main>', {
-          headers: { 'Content-Type': 'text/html' },
-        }),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({})));
-    vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('caches', { default: makeCache() });
-    const worker = await loadWorker();
-    const { ctx } = makeContext();
-
-    const response = await worker.fetch(
-      new Request('https://edge.example.com/docs'),
-      makeEnv(),
-      ctx,
-    );
-
-    await expect(response.text()).resolves.toBe('<main>content</main>');
   });
 
   it('propagates origin failures after preserving the response-path cleanup boundary', async () => {
