@@ -5,6 +5,7 @@ import { MetricsBatcher } from '../src/telemetry/metrics-batcher';
 import { HttpsTelemetryClient } from '../src/telemetry/https-client';
 import {
   TelemetryRuntime,
+  getOrCreateTelemetry,
   parseBoolEnv,
   resolveMetricsBaseUrl,
   resetTelemetrySingleton,
@@ -201,6 +202,41 @@ describe('MetricsBatcher', () => {
     expect(payload!.observations[0]!.variantValues.disabled).toBe(42);
     expect(payload!.observations[0]!.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
+
+  it('drops entries beyond configured caps and restores failed payloads', () => {
+    const batcher = new MetricsBatcher({
+      appKey: 'app',
+      environment: 'Production',
+      maxMetricKeys: 1,
+      maxObservations: 1,
+      instanceName: 'worker-1',
+    });
+    batcher.measure('first', 1);
+    batcher.measure('dropped', 2);
+    batcher.observe('latency', 10, { feature: 'checkout' });
+    batcher.observe('dropped-observation', 20);
+
+    expect(batcher.hitCap()).toBe(true);
+    const payload = batcher.buildAndReset()!;
+    expect(payload.instanceName).toBe('worker-1');
+    expect(payload.stats).toEqual([
+      { metric: 'first', variantValues: { enabled: 1 } },
+    ]);
+    expect(payload.observations).toHaveLength(1);
+
+    batcher.restoreFromPayload(payload);
+    const restored = batcher.buildAndReset()!;
+    expect(restored.stats).toEqual(payload.stats);
+    expect(restored.observations).toHaveLength(1);
+  });
+
+  it('omits zero-value variants from emitted metric maps', () => {
+    const batcher = new MetricsBatcher({ appKey: 'app', environment: 'Production' });
+    batcher.measure('balance', 0, { variant: 'enabled' });
+
+    const payload = batcher.buildAndReset()!;
+    expect(payload.stats).toEqual([]);
+  });
 });
 
 describe('HttpsTelemetryClient', () => {
@@ -230,6 +266,22 @@ describe('HttpsTelemetryClient', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     await expect(client.sendUsageStats({})).resolves.toBe(false);
+  });
+
+  it('uses default metadata and returns false for non-2xx responses', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
+    const client = new HttpsTelemetryClient({
+      userAgent: 'test-worker',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(client.getBaseUrl()).toBe('https://app.toggly.io/');
+    expect(client.getUserAgent()).toBe('test-worker');
+    await expect(client.post('/api/metrics', { value: 1 })).resolves.toBe(false);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://app.toggly.io/api/metrics',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });
 
@@ -359,6 +411,54 @@ describe('TelemetryRuntime', () => {
     expect(features).toEqual(expect.arrayContaining(['First', 'Second']));
     expect(runtime.usagePending()).toBe(false);
   });
+
+  it('keeps disabled telemetry inert and does not schedule a flush', async () => {
+    const fetchImpl = vi.fn();
+    const runtime = new TelemetryRuntime({
+      appKey: 'app',
+      environment: 'Production',
+      metricsBaseUrl: 'https://app.toggly.io/',
+      enableUsageTracking: false,
+      enableMetrics: false,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const waitUntil = vi.fn();
+
+    runtime.recordCheck('Feature', true, 'user');
+    runtime.recordUsage('Feature', 'user');
+    runtime.recordView('Feature', 'user');
+    runtime.recordDefinitionCacheHit();
+    runtime.recordDefinitionCacheMiss();
+    runtime.measure('metric', 1);
+    runtime.incrementCounter('counter');
+    runtime.observe('observation', 1);
+    runtime.scheduleFlush(waitUntil);
+    await runtime.flush();
+
+    expect(runtime.isUsageEnabled()).toBe(false);
+    expect(runtime.isMetricsEnabled()).toBe(false);
+    expect(runtime.usagePending()).toBe(false);
+    expect(runtime.metricsPending()).toBe(false);
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('reports cap pressure across usage and metrics batches', () => {
+    const runtime = new TelemetryRuntime({
+      appKey: 'app',
+      environment: 'Production',
+      metricsBaseUrl: 'https://app.toggly.io/',
+      enableUsageTracking: true,
+      enableMetrics: true,
+    });
+
+    for (let index = 0; index <= runtime.maxFeatures(); index += 1) {
+      runtime.recordCheck(`Feature-${index}`, true);
+    }
+
+    expect(runtime.featureCount()).toBe(runtime.maxFeatures());
+    expect(runtime.shouldFlushForCaps()).toBe(true);
+  });
 });
 
 describe('config helpers', () => {
@@ -370,5 +470,48 @@ describe('config helpers', () => {
     expect(resolveMetricsBaseUrl('https://custom.example')).toBe(
       'https://custom.example/'
     );
+    expect(parseBoolEnv('', false)).toBe(false);
+    expect(parseBoolEnv(' YES ', false)).toBe(true);
+    expect(parseBoolEnv('off', true)).toBe(false);
+    expect(parseBoolEnv('unexpected', true)).toBe(true);
+    expect(resolveMetricsBaseUrl(' https://custom.example/ ')).toBe(
+      'https://custom.example/'
+    );
+  });
+
+  it('creates singleton runtimes only for enabled configurations with an app key', () => {
+    expect(
+      getOrCreateTelemetry({
+        appKey: '',
+        environment: 'Production',
+        metricsBaseUrl: 'https://app.toggly.io/',
+        enableUsageTracking: true,
+        enableMetrics: false,
+      }),
+    ).toBeNull();
+    expect(
+      getOrCreateTelemetry({
+        appKey: 'app',
+        environment: 'Production',
+        metricsBaseUrl: 'https://app.toggly.io/',
+        enableUsageTracking: false,
+        enableMetrics: false,
+      }),
+    ).toBeNull();
+
+    const config = {
+      appKey: 'app',
+      environment: 'Production',
+      metricsBaseUrl: 'https://app.toggly.io/',
+      enableUsageTracking: true,
+      enableMetrics: false,
+    };
+    const first = getOrCreateTelemetry(config);
+    const second = getOrCreateTelemetry(config);
+    const changed = getOrCreateTelemetry({ ...config, environment: 'Staging' });
+
+    expect(first).not.toBeNull();
+    expect(second).toBe(first);
+    expect(changed).not.toBe(first);
   });
 });
