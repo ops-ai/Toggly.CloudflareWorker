@@ -4,8 +4,7 @@
 # one weekly PR. Toolchain majors need a config migration, so they stay product
 # decisions rather than bot merges.
 #
-# No github-actions ecosystem: this repo has no workflows. Add that block if
-# CI is introduced.
+# Keep the Worker CI action revisions current alongside the npm toolchain.
 #
 # Do not set target-branch here: develop is the default branch. Setting
 # target-branch would disable Dependabot security updates for that ecosystem.
@@ -14,6 +13,12 @@
 version: 2
 
 updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+
   - package-ecosystem: npm
     directory: "/"
     schedule:

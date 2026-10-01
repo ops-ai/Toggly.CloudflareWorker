@@ -51,21 +51,17 @@ export function transformHtmlResponse(
     return response;
   }
 
-  // Create transformer and transform the stream
+  // Cloudflare HTMLRewriter transforms a Response, retaining its streaming body.
   const transformer = createFeatureGateTransformer(flags, onFeatureGate);
-  // @ts-expect-error - HTMLRewriter types may be incorrect in @cloudflare/workers-types
-  const transformedStream = transformer.transform(body);
+  const transformedResponse = transformer.transform(response);
 
   // Copy headers but remove Content-Length as it may change
-  const headers = new Headers(response.headers);
+  const headers = new Headers(transformedResponse.headers);
   headers.delete('Content-Length');
 
-  // Create new response with transformed stream
-  // transformedStream is a ReadableStream from HTMLRewriter.transform()
-  // @ts-expect-error - TypeScript types for HTMLRewriter may be incorrect
-  return new Response(transformedStream as ReadableStream, {
-    status: response.status,
-    statusText: response.statusText,
+  return new Response(transformedResponse.body, {
+    status: transformedResponse.status,
+    statusText: transformedResponse.statusText,
     headers,
   });
 }
