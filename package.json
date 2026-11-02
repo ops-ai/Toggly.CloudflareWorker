@@ -18,14 +18,14 @@
     "clean": "rm -rf .wrangler dist"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260903.1",
+    "@cloudflare/workers-types": "^5.20261030.1",
     "@eslint/js": "^10.0.1",
-    "@vitest/coverage-v8": "^5.0.3",
-    "eslint": "^10.9.1",
+    "@vitest/coverage-v8": "^5.0.5",
+    "eslint": "^10.14.0",
     "typescript": "^5.3.3",
-    "typescript-eslint": "^8.69.0",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.3",
-    "wrangler": "^4.129.0"
+    "wrangler": "^4.156.0"
   },
   "overrides": {
     "minimatch": "^10.2.2"
