@@ -1,3 +1,31 @@
+## 0.3.1
+
+2026-11-02
+
+### Fixed
+- Keep isolate last-known-good flag definitions on transient fetch failures
+  instead of poisoning Cache API with empty objects (aligned with monorepo
+  `@ops-ai/toggly-cloudflare-worker` 0.4.1 evaluation contract).
+- Preserve last-known-good page-feature manifests when origin fetch fails.
+- Reuse page-gate flags for section HTML gating in the same request so
+  definition cache hits are not double-counted.
+- Deduplicate usage `requestCount` per feature/variant within a single HTTP
+  request via `RequestScopedUsageRecorder`.
+- Flush HTML telemetry with a pull-driven stream wrapper (client backpressure)
+  instead of `ReadableStream.tee()` + eager drain.
+- Flush the previous isolate `TelemetryRuntime` when config changes mid-isolate.
+- Honor `data-toggly-negate="true"` so negated wrappers are not stripped at the edge.
+- Forward origin query strings when proxying static and HTML paths.
+
+### Changed
+- `engines.node` floor `>=18` → `>=22`; CI matrix Node 22 / 24 / 26.
+- Wrangler `compatibility_date` `2024-01-01` → `2026-11-02`.
+- Dev dependency bumps: wrangler, `@cloudflare/workers-types`, vitest /
+  `@vitest/coverage-v8`, TypeScript 5.9.x (latest compatible with
+  `typescript-eslint`), `actions/checkout` v7.
+- Package / Worker version `0.3.0` → `0.3.1` (User-Agent
+  `toggly-cloudflare-worker/0.3.1`). Unreleased until an owner publish.
+
 ## 0.3.0
 
 2026-09-09

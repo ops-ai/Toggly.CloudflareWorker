@@ -1,5 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getFlags, isFeatureEnabled, type DefinitionCacheRecorder } from '../src/flags';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  getFlags,
+  isFeatureEnabled,
+  resetFlagsMemoryCache,
+  type DefinitionCacheRecorder,
+} from '../src/flags';
 import type { Env } from '../src/types';
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
@@ -59,9 +64,15 @@ function makeRecorder(): DefinitionCacheRecorder & {
 }
 
 describe('getFlags', () => {
+  beforeEach(() => {
+    resetFlagsMemoryCache();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    resetFlagsMemoryCache();
   });
 
   it('fetches evaluated-signed from definitions.toggly.io with app key and environment', async () => {
@@ -122,7 +133,24 @@ describe('getFlags', () => {
     );
   });
 
-  it('counts Cache API serve as a definition cache hit', async () => {
+  it('counts in-memory TTL still valid as a definition cache hit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ defs: { FeatureA: true } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const recorder = makeRecorder();
+
+    await getFlags(makeEnv(), {}, null, 30, recorder);
+    expect(recorder.misses).toBe(1);
+    expect(recorder.hits).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await getFlags(makeEnv(), {}, null, 30, recorder);
+    expect(recorder.hits).toBe(1);
+    expect(recorder.misses).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts Cache API serve as a hit when memory TTL is cold', async () => {
+    vi.useFakeTimers();
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ defs: { FeatureA: true } }));
     vi.stubGlobal('fetch', fetchMock);
     const cache = makeMemoryCache();
@@ -130,9 +158,9 @@ describe('getFlags', () => {
 
     await getFlags(makeEnv(), {}, cache, 30, recorder);
     expect(recorder.misses).toBe(1);
-    expect(recorder.hits).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
+    vi.advanceTimersByTime(31_000);
     await getFlags(makeEnv(), {}, cache, 30, recorder);
     expect(recorder.hits).toBe(1);
     expect(recorder.misses).toBe(1);
@@ -158,8 +186,8 @@ describe('getFlags', () => {
       async match(): Promise<Response | undefined> {
         return undefined;
       },
-      async put(): Promise<void> {
-        throw new Error('cache unavailable');
+      put(): Promise<void> {
+        return Promise.reject(new Error('cache unavailable'));
       },
       async delete(): Promise<boolean> {
         return false;
@@ -174,7 +202,35 @@ describe('getFlags', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not count network errors (no last-good retention)', async () => {
+  it('counts network error with last-good as a hit and does not poison Cache API', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ defs: { FeatureA: true } }))
+      .mockRejectedValueOnce(new Error('timeout'));
+    vi.stubGlobal('fetch', fetchMock);
+    const recorder = makeRecorder();
+
+    await getFlags(makeEnv(), {}, null, 30, recorder);
+    expect(recorder.misses).toBe(1);
+
+    // Expire memory TTL so the next call attempts the network again.
+    vi.advanceTimersByTime(31_000);
+    const coldCache = makeMemoryCache();
+    const flags = await getFlags(makeEnv(), {}, coldCache, 30, recorder);
+    expect(flags).toEqual({ FeatureA: true });
+    expect(recorder.hits).toBe(1);
+    expect(recorder.misses).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Failed refresh must not write an empty object into Cache API.
+    expect(
+      await coldCache.match(
+        new Request('https://toggly-cache/flags:my-app:Production:{}'),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('does not count network errors when there is no last-good retention', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
     const recorder = makeRecorder();
 
@@ -184,27 +240,32 @@ describe('getFlags', () => {
     expect(recorder.misses).toBe(0);
   });
 
-  it('does not increment on isFeatureEnabled beyond the underlying refresh', async () => {
+  it('does not increment beyond one outcome per getFlags / isFeatureEnabled refresh', async () => {
     const fetchMock = vi
       .fn()
-      .mockImplementation(() => Promise.resolve(jsonResponse({ FeatureA: true })));
+      .mockImplementation(() => Promise.resolve(jsonResponse({ FeatureA: true, FeatureB: false })));
     vi.stubGlobal('fetch', fetchMock);
     const recorder = makeRecorder();
 
     await isFeatureEnabled('FeatureA', makeEnv(), {}, null, 30, recorder);
-    await isFeatureEnabled('FeatureA', makeEnv(), {}, null, 30, recorder);
+    await isFeatureEnabled('FeatureB', makeEnv(), {}, null, 30, recorder);
 
-    // Each call is one refresh attempt (no Cache API) → two misses, not per-flag extras
-    expect(recorder.misses).toBe(2);
-    expect(recorder.hits).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // First miss fills memory; second within TTL is a hit — not one count per flag key.
+    expect(recorder.misses).toBe(1);
+    expect(recorder.hits).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('isFeatureEnabled', () => {
+  beforeEach(() => {
+    resetFlagsMemoryCache();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    resetFlagsMemoryCache();
   });
 
   it('returns false when the flag is missing', async () => {

@@ -25,6 +25,7 @@ function startFixtureOrigin() {
         <main>
           <section id="disabled" data-feature="DisabledFeature">Disabled content</section>
           <section id="enabled" data-feature="EnabledFeature">Enabled content</section>
+          <section id="negated" data-feature="DisabledFeature" data-toggly-negate="true">Negated content</section>
         </main>`);
       return;
     }
@@ -129,6 +130,8 @@ test('workerd removes disabled sections and retains enabled sections', async () 
     assert.doesNotMatch(html, /Disabled content/);
     assert.match(html, /id="enabled"/);
     assert.match(html, /Enabled content/);
+    assert.match(html, /id="negated"/);
+    assert.match(html, /Negated content/);
   } finally {
     await stopWorkerAndCloseOrigin(worker, server);
   }

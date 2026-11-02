@@ -27,8 +27,7 @@ async function fetchManifest(env: Env): Promise<PageFeatureMapping> {
   });
 
   if (!response.ok) {
-    console.warn(`Failed to fetch manifest: ${response.status} ${response.statusText}`);
-    return {};
+    throw new Error(`Failed to fetch manifest: ${response.status} ${response.statusText}`);
   }
 
   const manifest = (await response.json()) as PageFeatureMapping;
@@ -63,15 +62,26 @@ export async function getManifest(
     }
   }
 
-  // Fetch from origin
-  const manifest = await fetchManifest(env);
+  let manifest: PageFeatureMapping;
+  try {
+    manifest = await fetchManifest(env);
+  } catch (error) {
+    console.warn(
+      '[Toggly Cloudflare Worker] Failed to fetch manifest:',
+      error instanceof Error ? error.message : error,
+    );
+    // Preserve last-known-good; never overwrite caches with an empty fallback.
+    return manifestCache ?? {};
+  }
 
-  // Update in-memory cache
-  manifestCache = manifest;
-  manifestCacheTimestamp = now;
+  // Update in-memory cache only for non-empty manifests
+  if (Object.keys(manifest).length > 0) {
+    manifestCache = manifest;
+    manifestCacheTimestamp = now;
+  }
 
-  // Store in Cloudflare cache
-  if (cache) {
+  // Store in Cloudflare cache only when we have a usable mapping
+  if (cache && Object.keys(manifest).length > 0) {
     const response = new Response(JSON.stringify(manifest), {
       headers: {
         'Content-Type': 'application/json',
@@ -80,7 +90,9 @@ export async function getManifest(
     });
     // Note: In Cloudflare Workers, we can't use ctx.waitUntil here
     // The cache.put is fire-and-forget
-    cache.put(cacheKey, response);
+    void cache.put(cacheKey, response).catch(() => {
+      /* soft-fail cache write */
+    });
   }
 
   return manifest;

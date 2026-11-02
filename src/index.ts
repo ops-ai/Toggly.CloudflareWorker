@@ -14,8 +14,10 @@
 import type { Env, RequestContext, WorkerConfig } from './types';
 import { PageGateBehavior } from './types';
 import { getFeatureKeyForPath } from './manifest';
-import { getFlags, isFeatureEnabled } from './flags';
+import { getFlags } from './flags';
 import { transformHtmlResponse } from './html-rewriter';
+import { RequestScopedUsageRecorder } from './request-usage';
+import { wrapReadableWithCompletion } from './stream-flush';
 import {
   getOrCreateTelemetry,
   parseBoolEnv,
@@ -72,51 +74,62 @@ function isHtmlResponse(response: Response): boolean {
   return contentType.includes('text/html');
 }
 
+type PageGateResult = {
+  /** Non-null when the page is blocked (404/redirect). */
+  response: Response | null;
+  /**
+   * Flags from the single refresh for this request when the page gate ran.
+   * Reused for section gating so we do not double-count definition cache hits.
+   */
+  flags: Record<string, boolean> | null;
+};
+
 /**
  * Handle page-level gating
  * Returns a response (404 or redirect) if the page feature is disabled
  */
 async function handlePageLevelGate(
-  _path: string,
   featureKey: string,
   env: Env,
   context: RequestContext,
   cache: Cache | null,
   config: WorkerConfig,
+  usage: RequestScopedUsageRecorder,
   telemetry: TelemetryRuntime | null
-): Promise<Response | null> {
+): Promise<PageGateResult> {
   const recorder = telemetry?.isUsageEnabled() ? telemetry : null;
-  const isEnabled = await isFeatureEnabled(
-    featureKey,
+  const flags = await getFlags(
     env,
     context,
     cache,
     config.flagsCacheTTL,
     recorder
   );
+  const isEnabled = flags[featureKey] ?? false;
 
-  if (telemetry?.isUsageEnabled()) {
-    telemetry.recordCheck(featureKey, isEnabled, identityFromContext(context), true);
-    if (isEnabled) {
-      telemetry.recordView(featureKey, identityFromContext(context));
-    }
-  }
+  usage.recordGate(featureKey, isEnabled, identityFromContext(context));
 
   if (!isEnabled) {
     if (config.pageGateBehavior === PageGateBehavior.REDIRECT) {
       const redirectUrl = config.redirectUrl || '/upgrade';
-      return Response.redirect(new URL(redirectUrl, env.ORIGIN_BASE_URL).toString(), 302);
+      return {
+        response: Response.redirect(new URL(redirectUrl, env.ORIGIN_BASE_URL).toString(), 302),
+        flags: null,
+      };
     }
-    return new Response('Not Found', {
-      status: 404,
-      statusText: 'Not Found',
-      headers: {
-        'Content-Type': 'text/plain',
-      },
-    });
+    return {
+      response: new Response('Not Found', {
+        status: 404,
+        statusText: 'Not Found',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+      }),
+      flags: null,
+    };
   }
 
-  return null; // Feature is enabled, continue processing
+  return { response: null, flags };
 }
 
 function flushTelemetry(
@@ -132,8 +145,8 @@ function flushTelemetry(
 }
 
 /**
- * Return a teed HTML body and flush telemetry only after the rewriter stream
- * has been fully drained (section `data-feature` handlers run while pulling).
+ * Return HTML with telemetry flushed after the client-consumed stream
+ * completes. Pull-driven wrapper preserves backpressure (no tee + eager drain).
  */
 function respondHtmlWithDeferredFlush(
   response: Response,
@@ -146,29 +159,13 @@ function respondHtmlWithDeferredFlush(
     return response;
   }
 
-  const [clientBody, drainBody] = body.tee();
-  ctx.waitUntil(
-    (async () => {
-      try {
-        await drainBody.pipeTo(
-          new WritableStream({
-            write() {
-              /* discard — drives HTMLRewriter so section telemetry records */
-            },
-          })
-        );
-      } catch {
-        // Client abort / stream errors must not break soft-fail flush
-      }
-      try {
-        await telemetry.flush();
-      } catch {
-        // soft-fail
-      }
-    })()
+  const wrapped = wrapReadableWithCompletion(
+    body,
+    () => telemetry.flush(),
+    (promise) => ctx.waitUntil(promise),
   );
 
-  return new Response(clientBody, {
+  return new Response(wrapped, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
@@ -187,6 +184,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const telemetry = createTelemetry(env);
+    const usage = new RequestScopedUsageRecorder(telemetry);
 
     try {
       // Skip processing for manifest and other static assets
@@ -196,7 +194,7 @@ export default {
         path.startsWith('/static/')
       ) {
         // Proxy to origin without modification
-        const originUrl = new URL(path, env.ORIGIN_BASE_URL);
+        const originUrl = new URL(path + url.search, env.ORIGIN_BASE_URL);
         return fetch(originUrl.toString(), request);
       }
 
@@ -213,26 +211,28 @@ export default {
         cache,
         WORKER_CONFIG.manifestCacheTTL * 1000
       );
+      let pageFlags: Record<string, boolean> | null = null;
 
       if (featureKey) {
-        const gateResponse = await handlePageLevelGate(
-          path,
+        const gate = await handlePageLevelGate(
           featureKey,
           env,
           context,
           cache,
           WORKER_CONFIG,
+          usage,
           telemetry
         );
 
-        if (gateResponse) {
+        if (gate.response) {
           flushTelemetry(telemetry, ctx);
-          return gateResponse;
+          return gate.response;
         }
+        pageFlags = gate.flags;
       }
 
-      // Fetch from origin
-      const originUrl = new URL(path, env.ORIGIN_BASE_URL);
+      // Fetch from origin (preserve query string)
+      const originUrl = new URL(path + url.search, env.ORIGIN_BASE_URL);
       const originRequest = new Request(originUrl.toString(), request);
 
       const response = await fetch(originRequest);
@@ -243,25 +243,24 @@ export default {
         return response;
       }
 
-      // For HTML responses, apply section-level gating
+      // For HTML responses, apply section-level gating. Reuse page-gate flags
+      // when present so one request does not double-count definition cache hits.
       const recorder = telemetry?.isUsageEnabled() ? telemetry : null;
-      const flags = await getFlags(
-        env,
-        context,
-        cache,
-        WORKER_CONFIG.flagsCacheTTL,
-        recorder
-      );
+      const flags =
+        pageFlags ??
+        (await getFlags(
+          env,
+          context,
+          cache,
+          WORKER_CONFIG.flagsCacheTTL,
+          recorder
+        ));
       const identity = identityFromContext(context);
       const transformedResponse = transformHtmlResponse(
         response,
         flags,
         (sectionFeature, enabled) => {
-          if (!telemetry?.isUsageEnabled()) return;
-          telemetry.recordCheck(sectionFeature, enabled, identity, true);
-          if (enabled) {
-            telemetry.recordView(sectionFeature, identity);
-          }
+          usage.recordGate(sectionFeature, enabled, identity);
         }
       );
 

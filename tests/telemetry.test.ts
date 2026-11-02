@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { hashIdentity } from '../src/telemetry/hash';
 import { UsageBatcher } from '../src/telemetry/usage-batcher';
 import { MetricsBatcher } from '../src/telemetry/metrics-batcher';
-import { HttpsTelemetryClient } from '../src/telemetry/https-client';
+import {
+  HttpsTelemetryClient,
+  DEFAULT_METRICS_BASE_URL,
+} from '../src/telemetry/https-client';
 import {
   TelemetryRuntime,
   getOrCreateTelemetry,
@@ -275,11 +278,11 @@ describe('HttpsTelemetryClient', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
-    expect(client.getBaseUrl()).toBe('https://app.toggly.io/');
+    expect(client.getBaseUrl()).toBe('https://metrics.toggly.io/');
     expect(client.getUserAgent()).toBe('test-worker');
     await expect(client.post('/api/metrics', { value: 1 })).resolves.toBe(false);
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://app.toggly.io/api/metrics',
+      'https://metrics.toggly.io/api/metrics',
       expect.objectContaining({ method: 'POST' }),
     );
   });
@@ -466,7 +469,9 @@ describe('config helpers', () => {
     expect(parseBoolEnv(undefined, true)).toBe(true);
     expect(parseBoolEnv('false', true)).toBe(false);
     expect(parseBoolEnv('1', false)).toBe(true);
-    expect(resolveMetricsBaseUrl(undefined)).toBe('https://app.toggly.io/');
+    expect(DEFAULT_METRICS_BASE_URL).toBe('https://metrics.toggly.io/');
+    expect(resolveMetricsBaseUrl(undefined)).toBe('https://metrics.toggly.io/');
+    expect(resolveMetricsBaseUrl('')).toBe('https://metrics.toggly.io/');
     expect(resolveMetricsBaseUrl('https://custom.example')).toBe(
       'https://custom.example/'
     );
@@ -476,6 +481,9 @@ describe('config helpers', () => {
     expect(parseBoolEnv('unexpected', true)).toBe(true);
     expect(resolveMetricsBaseUrl(' https://custom.example/ ')).toBe(
       'https://custom.example/'
+    );
+    expect(resolveMetricsBaseUrl('https://app.toggly.io/')).toBe(
+      'https://app.toggly.io/'
     );
   });
 
