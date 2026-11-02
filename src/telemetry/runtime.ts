@@ -93,7 +93,7 @@ export class TelemetryRuntime {
     }
   }
 
-  /** Definition-refresh served from Cache API without a network round-trip. */
+  /** Definition-refresh served from memory TTL, Cache API, or last-good. */
   recordDefinitionCacheHit(): void {
     if (!this.config.enableUsageTracking) return;
     try {
@@ -277,11 +277,17 @@ export function getOrCreateTelemetry(config: TelemetryConfig): TelemetryRuntime 
   ].join('|');
 
   if (!isolateRuntime || isolateKey !== key) {
+    const previous = isolateRuntime;
     isolateRuntime = new TelemetryRuntime({
       ...config,
       processStartTime: isolateStart,
     });
     isolateKey = key;
+    // Best-effort flush of the prior isolate buffer when config changes mid-isolate.
+    // Soft-fail lives inside flush(); fire-and-forget keeps this sync for callers.
+    if (previous) {
+      void previous.flush();
+    }
   }
   return isolateRuntime;
 }

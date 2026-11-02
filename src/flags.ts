@@ -3,9 +3,18 @@
  *
  * Fetches evaluated flags from definitions.toggly.io
  * (`/evaluated-signed/{appKey}/{environment}`) and caches them with the
- * Cloudflare Cache API. Kept as a direct fetch (no `@ops-ai/toggly-client-core`)
- * so the Worker hits the definitions path, not the legacy client.toggly.io
+ * Cloudflare Cache API plus an isolate last-known-good memory cache.
+ * Kept as a direct fetch (no `@ops-ai/toggly-client-core`) so the Worker hits
+ * the definitions path, not the legacy client.toggly.io
  * `{appKey}-{environment}/defs` URL.
+ *
+ * Definition-refresh cache accounting (when a recorder is injected):
+ * - In-memory TTL still valid → hit
+ * - Cache API serve without network → hit
+ * - Network error / timeout keeping last-good → hit
+ * - Successful network apply / Cache API fill → miss
+ *
+ * Count once per `getFlags` attempt — not per page/section evaluate.
  */
 
 import type { RequestContext, Env } from './types';
@@ -30,6 +39,18 @@ interface TogglyApiPayload {
 export interface DefinitionCacheRecorder {
   recordDefinitionCacheHit(): void;
   recordDefinitionCacheMiss(): void;
+}
+
+/** Isolate last-known-good flag map (survives transient definitions failures). */
+let flagsMemoryCache: Flags | null = null;
+let flagsMemoryCacheTimestamp = 0;
+let flagsMemoryCacheTtlMs = DEFAULT_FLAGS_CACHE_TTL_SECONDS * 1000;
+
+/** Reset isolate memory cache (tests). */
+export function resetFlagsMemoryCache(): void {
+  flagsMemoryCache = null;
+  flagsMemoryCacheTimestamp = 0;
+  flagsMemoryCacheTtlMs = DEFAULT_FLAGS_CACHE_TTL_SECONDS * 1000;
 }
 
 /**
@@ -96,12 +117,21 @@ async function fetchFlagsFromDefinitions(env: Env): Promise<DefinitionsFetchResu
   }
 }
 
+function updateFlagsMemoryCache(flags: Flags, ttlSeconds: number): void {
+  if (Object.keys(flags).length === 0) {
+    return;
+  }
+  flagsMemoryCache = flags;
+  flagsMemoryCacheTimestamp = Date.now();
+  flagsMemoryCacheTtlMs = ttlSeconds * 1000;
+}
+
 /**
  * Get feature flags for the given context.
- * Uses Cloudflare's cache API when available.
+ * Uses Cloudflare's cache API when available, plus isolate last-known-good.
  *
  * Counts one definition-refresh outcome per call when a recorder is provided:
- * Cache API match → hit; successful network apply → miss.
+ * memory/Cache API/last-good → hit; successful network apply → miss.
  * Network errors without last-good retention are not counted (N/A per design).
  */
 export async function getFlags(
@@ -111,42 +141,57 @@ export async function getFlags(
   cacheTTLSeconds: number = DEFAULT_FLAGS_CACHE_TTL_SECONDS,
   recorder?: DefinitionCacheRecorder | null,
 ): Promise<Flags> {
+  const now = Date.now();
+  if (flagsMemoryCache && now - flagsMemoryCacheTimestamp < flagsMemoryCacheTtlMs) {
+    recorder?.recordDefinitionCacheHit();
+    return flagsMemoryCache;
+  }
+
   const cacheKey = getFlagsCacheKey(env, context);
   const cacheRequest = new Request(`https://toggly-cache/${cacheKey}`);
 
   if (cache) {
     const cachedResponse = await cache.match(cacheRequest);
     if (cachedResponse) {
+      const flags = (await cachedResponse.json()) as Flags;
+      updateFlagsMemoryCache(flags, cacheTTLSeconds);
       recorder?.recordDefinitionCacheHit();
-      return (await cachedResponse.json()) as Flags;
+      return flags;
     }
   }
 
   const { flags, ok } = await fetchFlagsFromDefinitions(env);
 
   if (ok) {
+    updateFlagsMemoryCache(flags, cacheTTLSeconds);
     // New revision applied from network (fills Cache API when available).
     recorder?.recordDefinitionCacheMiss();
-  }
 
-  if (cache) {
-    // Put success body or empty failure body so subsequent requests can hit
-    // Cache API (same behavior as before ok/fail classification).
-    // Soft-fail writes: a rejected put must not fail the request after fetch.
-    const response = new Response(JSON.stringify(flags), {
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': `public, max-age=${cacheTTLSeconds}`,
-      },
-    });
-    try {
-      await cache.put(cacheRequest, response);
-    } catch {
-      // Cache unavailable / quota / transient write errors — keep fetched flags.
+    if (cache && Object.keys(flags).length > 0) {
+      // Soft-fail writes: a rejected put must not fail the request after fetch.
+      // Fire-and-forget so write latency/rejections never block the response.
+      const response = new Response(JSON.stringify(flags), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': `public, max-age=${cacheTTLSeconds}`,
+        },
+      });
+      void cache.put(cacheRequest, response).catch(() => {
+        // Cache unavailable / quota / transient write errors — keep fetched flags.
+      });
     }
+
+    return flags;
   }
 
-  return flags;
+  // Transient definitions failure: serve last-known-good when available.
+  // Do not poison Cache API with an empty fallback object.
+  if (flagsMemoryCache) {
+    recorder?.recordDefinitionCacheHit();
+    return flagsMemoryCache;
+  }
+
+  return {};
 }
 
 /**

@@ -7,7 +7,7 @@ One-click deployable Cloudflare Worker that applies Toggly feature-flag gating a
 ## What it does
 
 - Page gating: blocks or redirects requests whose paths are mapped to disabled feature flags.
-- Content scrubbing: strips HTML elements marked with `data-feature="flag_key"` when the flag is off.
+- Content scrubbing: strips HTML elements marked with `data-feature="flag_key"` when the flag is off (leaves `data-toggly-negate="true"` wrappers for client hydration).
 - Edge caching: caches flags and the feature manifest for low-latency checks.
 - Usage + metrics: batches feature check/view (and optional measure/counter/observe) telemetry and posts gateway-accepted HTTPS JSON to `api/usage/stats` and `api/metrics` (Workers cannot use native gRPC). Flushes via `ctx.waitUntil` so responses stay fast; network errors soft-fail and never break flag evaluation.
 
@@ -58,11 +58,11 @@ When usage tracking is enabled, page and section gating records **check** (and *
 - User-Agent: `toggly-cloudflare-worker/{version}`
 - Wire fields: `variantStats` / `variantValues`; identity hashes are UTF-8 FNV-1a signed int32; HTTPS times are ISO-8601
 - Caps: unique hashes per feature / app (10k), max features (500), metric keys (500), observations (1000)
-- Flush: `ctx.waitUntil` after each request; for HTML, drain a teed rewriter stream first so section gates record, then flush (single-flight; restore batch on soft-fail)
+- Flush: `ctx.waitUntil` after each request; for HTML, a pull-driven stream wrapper flushes after the client finishes consuming the rewriter body (single-flight; restore batch on soft-fail)
 
 ## How it works
 - Looks up page → feature mappings from `toggly-page-features.json` served by your origin.
-- Fetches evaluated flags from `GET {TOGGLY_API_BASE_URL}/evaluated-signed/{appKey}/{environment}` (default host `https://definitions.toggly.io`). Accepts a bare flag map or `{ defs: … }`. Fetch failures soft-fail to `{}` so gating stays closed rather than taking the site down.
+- Fetches evaluated flags from `GET {TOGGLY_API_BASE_URL}/evaluated-signed/{appKey}/{environment}` (default host `https://definitions.toggly.io`). Accepts a bare flag map or `{ defs: … }`. Transient fetch failures keep isolate last-known-good definitions when available; otherwise soft-fail to `{}` so gating stays closed rather than taking the site down.
 - Blocks entire pages (404 or redirect) if their feature is off.
 - Streams HTML through `HTMLRewriter` to remove elements with disabled `data-feature` flags.
 - Posts usage/metrics to `{TOGGLY_METRICS_BASE_URL}api/usage/stats` and `…/api/metrics` (default `https://app.toggly.io/`), not to the definitions host.

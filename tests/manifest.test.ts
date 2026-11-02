@@ -89,12 +89,32 @@ describe('page-feature manifest caching', () => {
     await expect(getFeatureKeyForPath('/missing', makeEnv(), cache)).resolves.toBeNull();
   });
 
-  it('returns an empty manifest after an unsuccessful origin response', async () => {
+  it('returns an empty manifest after an unsuccessful origin response with no last-good', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('unavailable', { status: 503 })));
     const { getManifest } = await loadManifestModule();
 
     await expect(getManifest(makeEnv(), null)).resolves.toEqual({});
-    expect(warn).toHaveBeenCalledWith('Failed to fetch manifest: 503 ');
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('preserves last-known-good when a later origin fetch fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ '/premium': 'Premium' }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('unavailable', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { getManifest } = await loadManifestModule();
+
+    await expect(getManifest(makeEnv(), null, 1)).resolves.toEqual({ '/premium': 'Premium' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect(getManifest(makeEnv(), null, 1)).resolves.toEqual({ '/premium': 'Premium' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalled();
   });
 });

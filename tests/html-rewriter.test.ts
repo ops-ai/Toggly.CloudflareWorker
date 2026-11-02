@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createFeatureGateTransformer,
+  shouldStripFeatureElement,
   transformHtmlResponse,
 } from '../src/html-rewriter';
 
@@ -19,9 +20,9 @@ class TestHtmlRewriter {
   }
 }
 
-function makeElement(featureKey: string | null) {
+function makeElement(attrs: Record<string, string | null>) {
   return {
-    getAttribute: vi.fn().mockReturnValue(featureKey),
+    getAttribute: vi.fn((name: string) => attrs[name] ?? null),
     remove: vi.fn(),
   } as unknown as Element;
 }
@@ -38,7 +39,7 @@ describe('HTML feature gating', () => {
       { Enabled: true },
       (featureKey, enabled) => seen.push([featureKey, enabled]),
     ) as unknown as TestHtmlRewriter;
-    const element = makeElement('Disabled');
+    const element = makeElement({ 'data-feature': 'Disabled' });
 
     expect(transformer.selector).toBe('[data-feature]');
     transformer.handlers!.element(element);
@@ -54,8 +55,8 @@ describe('HTML feature gating', () => {
       { Enabled: true },
       observer,
     ) as unknown as TestHtmlRewriter;
-    const enabledElement = makeElement('Enabled');
-    const missingAttributeElement = makeElement(null);
+    const enabledElement = makeElement({ 'data-feature': 'Enabled' });
+    const missingAttributeElement = makeElement({ 'data-feature': null });
 
     transformer.handlers!.element(enabledElement);
     transformer.handlers!.element(missingAttributeElement);
@@ -65,12 +66,31 @@ describe('HTML feature gating', () => {
     expect(missingAttributeElement.remove).not.toHaveBeenCalled();
   });
 
+  it('does not strip negated wrappers even when the flag is disabled', () => {
+    vi.stubGlobal('HTMLRewriter', TestHtmlRewriter);
+    const seen: Array<[string, boolean]> = [];
+    const transformer = createFeatureGateTransformer(
+      { Premium: false },
+      (featureKey, enabled) => seen.push([featureKey, enabled]),
+    ) as unknown as TestHtmlRewriter;
+    const element = makeElement({
+      'data-feature': 'Premium',
+      'data-toggly-negate': 'true',
+    });
+
+    transformer.handlers!.element(element);
+
+    expect(seen).toEqual([['Premium', false]]);
+    expect(element.remove).not.toHaveBeenCalled();
+    expect(shouldStripFeatureElement({ Premium: false }, 'Premium', 'true')).toBe(false);
+  });
+
   it('keeps rendering when the telemetry observer fails', () => {
     vi.stubGlobal('HTMLRewriter', TestHtmlRewriter);
     const transformer = createFeatureGateTransformer({ Enabled: true }, () => {
       throw new Error('telemetry unavailable');
     }) as unknown as TestHtmlRewriter;
-    const element = makeElement('Enabled');
+    const element = makeElement({ 'data-feature': 'Enabled' });
 
     expect(() => transformer.handlers!.element(element)).not.toThrow();
     expect(element.remove).not.toHaveBeenCalled();
